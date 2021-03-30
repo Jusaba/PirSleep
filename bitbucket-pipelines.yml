@@ -1,0 +1,29 @@
+pipelines:
+  default:
+    - step:
+        caches:
+          - docker
+        script:
+          - nLinea=$(grep "#define VBuild" -n ServerPic.h | cut -d ":" -f 1 )
+          - sed -i "${nLinea} d" ServerPic.h
+          - sed -i "${nLinea} s|^|\t#define VBuild  \"${BITBUCKET_BUILD_NUMBER}\"\n|" ServerPic.h
+          - git add ServerPic.h
+          - git commit -m "[skip ci] Compilacion version $BITBUCKET_BUILD_NUMBER"
+          - git push
+          - mkdir librerias
+          - git clone https://julian60@bitbucket.org/julian60/libreriasserverpic.git $BITBUCKET_CLONE_DIR/librerias
+          - docker run -v $BITBUCKET_CLONE_DIR/librerias:/root/Arduino/libraries/serverpic -v $BITBUCKET_CLONE_DIR:/home/bin/esp8266 --env-file parametros.env  -i jusaba/esp8266-cli:latest
+          - cIno=$(grep "_ino" parametros.env | cut -d "=" -f 2 )
+          - cInoVersion=$cIno"_$BITBUCKET_BUILD_NUMBER.bin"
+          - cIno=$cIno".bin"
+          - mv $cIno $cInoVersion
+          - curl -F "file=@$BITBUCKET_CLONE_DIR/$cInoVersion" http://picserver.jusaba.es:1302/firmware
+          - curl -F "file=@$BITBUCKET_CLONE_DIR/$cInoVersion" http://picservertest.jusaba.es:2001/firmware
+
+        services:
+          - docker
+
+definitions:
+  services:
+    docker:
+      memory: 1600
