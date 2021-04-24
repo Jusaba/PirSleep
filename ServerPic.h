@@ -78,26 +78,23 @@
 	//----------------------------
 
 
-	boolean lOnOff = 1;														//Flag que indica si el PIR está habilitado o no												
-	boolean lDispositivo = 0;												//Flag que indica que se ha dado la orden al  dispositivo remoto para que actue
+	boolean lOnOff = 1;						//Flag que indica si el PIR está habilitado o no												
+	boolean lDispositivo = 0;				//Flag que indica que se ha dado la orden al  dispositivo remoto para que actue
 
-	boolean lInput1 = 0;													//Flag donde se almacenará el estado de la entrada 1
-	boolean lInput2 = 0;													//Flag donde se almacenará el estado de la entrada 2
-	int nTipoEntrada = 0;													//Variable donde se alamcana el tipo de arranque segun tabla de definiciones tipos de netrada	
+	boolean lInput1 = 0;					//Flag donde se almacenará el estado de la entrada 1
+	boolean lInput2 = 0;					//Flag donde se almacenará el estado de la entrada 2
+	int nTipoEntrada = 0;					//Variable donde se alamcana el tipo de arranque segun tabla de definiciones tipos de netrada	
 
-	long nTiempoSueno = 0;													//Tiempo de sueño
-
-	long nTempoInicio = 0;													//Instante en el que se ejecuta una de las funciones de tratamiento de mode de despertado
-	
-
-	boolean lSirena = 0;
-	boolean lAlarma = 0;
-	long nInicioAlarma = 0;
-	int nSgAlarma = 40;
-	long nInicioSirena = 0;
-	int nSgSirena = 30;
+	long nTiempoSueno = 0;					//Tiempo de sueño
 
 
+	boolean lSirena = 0;					//Flag que indica si la sirena esta On
+	boolean lAlarma = 0;					//Flag que indica si esta en alarma
+	long nInicioAlarma = 0;					//Variable que almacena el instante del inicio de la alarma
+	long nInicioDespierto = 0;				//Variable donde se almacena el instante en que se despierta el pir
+	long nInicioSirena = 0;					//Variable donde se almacena el inicio de activacion de la sirena	
+	int nSgAlarma = 40;						//Numero de segundos de la alarma. Tiempo que esperara el pir para dormir una vez activada la alarma de movimiento
+	int nSgSirena = 30;						//Numero de segundos de la sirena
 
 	//----------------------------
 	//CARACTERISTICAS DISPOSITIVO
@@ -115,10 +112,53 @@
 
 	#include "IO.h";
 
+	//----------------------------
+	//Declaracion de funciones UNIVERSALES
+	//----------------------------
 
-void lOnOffToRTC ( void );
-void RTCTolOnOff( void );
+	boolean GetDispositivo (void);
+	void DispositivoOn (void);
+	void DispositivoOff (void);
 
+	//----------------------------
+	//Declaracion de funciones PARTICULARES
+	//----------------------------
+
+
+	void GrabaTiempoSueno ( int nSegundos );
+	int LeeTiempoSueno ( void );
+	void EnciendeSirena (void);
+	void ApagaSirena (void);
+	void BeepSirena (void);
+	void lOnOffToRTC ( void );
+	void RTCTolOnOff( void );
+
+	#ifdef Led															
+		void EnciendeLed (void);
+		void ApagaLed (void);	
+		void FlashLed (void);
+	#endif
+
+
+	void PirOn (void);
+	void PirOff (void);
+
+	void  InputsEnable (void);
+	void  InputsDisable (void);	
+
+	void Dormir (void);
+	void Despertar (void);
+
+	boolean ServicioInput1 (void);
+	void ServicioInput2 (void);
+
+	void ServicioInputTemporizacion (void);
+
+	void lOnOffToRTC ( void );
+	void RTCTolOnOff ( void );
+
+	void lConexionPerdidaToRTC ( void );
+	void RTCTolConexionPerdida ( void );
 
 	//----------------------------------------------
 	//DEBUG
@@ -158,7 +198,7 @@ void RTCTolOnOff( void );
 	//Tiempos de sueño en segundos
 	//-----------------------------------------------
 	#define TiempoSuenoNormal			60
-
+	#define TiempoDespiertoNormal		60
 
 	//Variables donde se almacenan los datos definidos anteriormente para pasarlos a Serverpic.h
 	//para mandar la información del Hardware y Software utilizados
@@ -196,6 +236,16 @@ int LeeTiempoSueno ( void )
 	int nSegundos = LeeIntEprom ( nPosicionDataUsuario );
 	return ( nSegundos );
 }
+void GrabaTiempoSirena ( int nSegundos )
+{
+	GrabaIntEprom ( nPosicionDataUsuario + 2, nSegundos );
+	EEPROM.commit();
+}
+int LeeTiempoSirena ( void )
+{
+	int nSegundos = LeeIntEprom ( nPosicionDataUsuario + 2 );
+	return ( nSegundos );
+}
 /**
 ******************************************************
 * @brief Enciende Sirena
@@ -217,6 +267,22 @@ void ApagaSirena (void)
   digitalWrite(PinSirena, HIGH);	
   lSirena = 0;
 
+}
+/**
+******************************************************
+* @brief BeepSIrena
+*
+*/
+void BeepSirena (void)
+{
+  digitalWrite(PinSirena, LOW);
+  delay(100);
+  digitalWrite(PinSirena, HIGH);
+  delay(100);  
+  digitalWrite(PinSirena, LOW);
+  delay(100);
+  digitalWrite(PinSirena, HIGH);
+  delay(100);    
 }
 #ifdef Led															
 	/**
@@ -278,6 +344,10 @@ void DispositivoOn (void)
 {
 	lOnOff=1;
 	lOnOffToRTC();
+	if ( !lSirena )
+	{
+		BeepSirena();
+	}	
 }
 /**
 ******************************************************
@@ -288,50 +358,11 @@ void DispositivoOff (void)
 {
 	lOnOff=0;
 	lOnOffToRTC();
+	BeepSirena();
+
 }
 
-/**
-******************************************************
-* @brief  Manda un Push a la cuanta de Julian
-*/
 
-boolean PushJulilan (void)
-{
-	Serial.print("Envio Push:");
-	Serial.println(lPush);
-	long nMiliSegundos = 0;
-	boolean lSalida = 0;
-	Cliente.print("push-:-a1q5w28e6t1yoa39en7kz73afh5txd-:-utjnmdhooubzbsozeu7vkqzjkg4j4n-:-Iphone_Julian-:-Deteccion Movimiento-:-Se ha detectado movimiento-:-updown");
-	Cliente.print("\n");
-	delay(200) ;					
-   	nMiliSegundos = millis();
-   	while ( !Cliente.available() && millis() < nMiliSegundos + 5000 ){}                         //Mientras recibamos datos del servidor
-  	if ( Cliente.readStringUntil('\n') == Ok )                                                                         //Si se recibe, se ha realizado la conexion con exito
-  	{
-  		lSalida=1;
-  	}  
-  	return ( lSalida );
-}
-/**
-******************************************************
-* @brief  Manda un Push a la cuanta de Jesus
-*
-*/
-boolean PushJesus (void)
-{
-	long nMiliSegundos = 0;
-	boolean lSalida = 0;
-	Cliente.print("push-:-ag8i5hnczdm9incg8b42zm4xpt2n7n-:-uc4niuf2dj3v82eakpduxfvkkxymtr-:-jesus-:-Sirena-:-La sirena esta encnedida-:-updown");
-	Cliente.print("\n");
-	delay(200) ;					
-   	nMiliSegundos = millis();
-   	while ( !Cliente.available() && millis() < nMiliSegundos + 5000 ){}                         //Mientras recibamos datos del servidor
-  	if ( Cliente.readStringUntil('\n') == Ok )                                                                         //Si se recibe, se ha realizado la conexion con exito
-  	{
-  		lSalida=1;
-  	}  
-  	return ( lSalida );
-}
 /**
 ******************************************************
 * @brief  Función que se ejecuta cuando se detecta movimiento
@@ -413,18 +444,22 @@ void Despertar (void)
 }
 
 /**
-* @brief Funciondssd de servicio para entrada 1
+* @brief Funcion de servicio para entrada 1
 *
+* Comprueba si el pir esta deshabilitado o no, si lo esta, pone el flag de Alarma a 1
+* @return.- Devuelve el estado 1/0 ( Pir habilidtado o deshabilitado )
 */
-void ServicioInput1 ()
+boolean ServicioInput1 ()
 {
-	nTempoInicio=millis();											//Inicio temporizador para dormir
-	nTipoEntrada = TipoEntrada1;										//Asignar Tipo de Entrada
+	boolean lSalida = 0;
+	nTipoEntrada = TipoEntrada1;									//Asignar Tipo de Entrada
 	if ( lOnOff )
 	{ 
 		lAlarma = 1;
 		EnciendeSirena();
+		lSalida = 1;
 	}	
+	return (lSalida);
 }
 /**
 * @brief Funcion de servicio para entrada 2
@@ -432,7 +467,6 @@ void ServicioInput1 ()
 */
 void ServicioInput2 (void)
 {
-	nTempoInicio=millis();											//Inicio temporizador para dormir
 	nTipoEntrada = TipoEntrada2;									//Asignar Tipo de Entrada
 
 }
@@ -442,7 +476,6 @@ void ServicioInput2 (void)
 */
 void ServicioInputTemporizacion (void)
 {
-	nTempoInicio=millis();												//Inicio temporizador para dormir
 	nTipoEntrada = TipoEntradaTemporizacion;							//Asignar Tipo de Entrada
 	nTiempoSueno = TiempoSuenoNormal;									//Tiempo normal de temporizacion
 }
@@ -465,4 +498,22 @@ void RTCTolOnOff ( void )
 	uint32 lOnOffRTC;
 	ESP.rtcUserMemoryRead(100, (uint32*) &lOnOffRTC, sizeof(lOnOffRTC));
 	lOnOff=lOnOffRTC;
+}
+/**
+* @brief Funcion que graba lConexionPerdida en el bloque 101 RTC
+*
+*/
+void lConexionPerdidaToRTC ( void )
+{
+	ESP.rtcUserMemoryWrite(101, (uint32 *) &lConexionPerdida, 4);
+}
+/**
+* @brief Funcion que lee lConexionPerdida en el bloque 101 de RTC
+*
+*/
+void RTCTolConexionPerdida ( void )
+{
+	uint32 lConexionPerdidaRTC;
+	ESP.rtcUserMemoryRead(101, (uint32*) &lConexionPerdidaRTC, sizeof(lConexionPerdidaRTC));
+	lConexionPerdida=lConexionPerdidaRTC;
 }

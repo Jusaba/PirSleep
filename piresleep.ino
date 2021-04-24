@@ -19,24 +19,15 @@
 #include "IO.h"
 
 void setup() {
+
+	//----------------------------------------------------------
+	//Condifuracion de Pins
+	//----------------------------------------------------------
 	pinMode( PinWake, OUTPUT );											//Salida para despertar a ESP8266
 	digitalWrite( PinWake, HIGH );										//La ponemos a 1 para que ESP8266 pueda arrancar
 
-	digitalWrite( PinSirena, HIGH );
   	pinMode(PinSirena, OUTPUT);               							//configuramos el pin de la sirena como salida
-	ApagaSirena();
-
-	RTCTolOnOff ();
-  	#ifdef Debug														//Usamos el puereto serie solo para debugar	
-		Serial.begin(9600);												//Si no debugamos quedan libres los pines Tx, Rx para set urilizados
-		Serial.println("Iniciando........");
-	#endif
-	EEPROM.begin(256);													//Reservamos zona de EEPROM
-	//BorraDatosEprom ( 0, 256 );	    									//Borramos 256 bytes empezando en la posicion 0		
-
-	Serial.print ("Leido lOnOff en RTC:" );
-	Serial.println ( lOnOff );
-
+	ApagaSirena();														//Apagamos Sirna
 
   	pinMode(PinReset, INPUT_PULLUP);           							//Configuramos el pin de reset como entrada
 	
@@ -46,41 +37,91 @@ void setup() {
 	pinMode(Enable_2, OUTPUT);											//Salida que habilita/deshabilita la entrada 2
 
 
+ 	#ifdef Led															
+  		pinMode(PinLed, OUTPUT);               							//configuramos el pin del led verde como salida
+		EnciendeLed();													//Lo encendemos
+	#endif	
+
+
+  	#ifdef Debug														//Usamos el puereto serie solo para debugar	
+		Serial.begin(9600);												//Si no debugamos quedan libres los pines Tx, Rx para set urilizados
+		Serial.println("Iniciando........");
+	#endif
+	EEPROM.begin(256);													//Reservamos zona de EEPROM
+	//BorraDatosEprom ( 0, 256 );	    								//Borramos 256 bytes empezando en la posicion 0		
+
+	RTCTolOnOff ();														//Recuperamos desde RTC estado del pir ( Habilitado/Deshabilitado)
+  	#ifdef Debug														//Usamos el puereto serie solo para debugar	
+		Serial.print ("Recuperado lOnOff en RTC:" );
+		Serial.println ( lOnOff );
+	#endif	
+
 	delay(100);
 																		//Para saber que entrada ha despertado al micro, leemos el estado de ambas
 	lInput1=digitalRead(Test_1);										//Primero la 1		
 	lInput2=digitalRead(Test_2);										//Luego la 2
 
- 	#ifdef Led															
-  		pinMode(PinLed, OUTPUT);               							//configuramos el pin del led verde como salida
-		EnciendeLed();													//Lo encendemos
-	#endif	
+	InputsDisable();													//Deshabilitamos las entradas ( En prototipo, en realidad afecta solo a la del pir )
+
+	nTiempoSueno = LeeTiempoSueno();									//Leemos el tiempo de sueño
+
+	if ( nTiempoSueno == 0 )											//Si es 0, es por que se ha borrado accidentalmente de la memoria y le ponemos	
+	{																	//un tiempo superior a 0 para que se pueda despertar por temporizacion
+		nTiempoSueno = 60;
+	}
+
+	nSgSirena = LeeTiempoSirena();
+	if ( nSgSirena == 0 || nSgSirena > 120 )
+	{
+		nSgSirena = 30;
+	}
+	nSgAlarma = nSgSirena + 10;
+	
 	//---------------------------------------------
 	//Analisis de rntradas
     //---------------------------------------------
-	if ( ESP.getResetReason() == "Deep-Sleep Wake" )						//sE SE HA DESPERTADA
+	if ( ESP.getResetReason() == "Deep-Sleep Wake" )					//Si se ha despertado 
 	{
-		if ( lInput1  )	    												//Si el arranque lo ha producido la entrada 1	
-		{    					
-			ServicioInput1();   	
+		if ( lInput1  )	    											//Si el arranque lo ha producido la entrada 1	
+		{    		
+		  	#ifdef Debug												//Usamos el puereto serie solo para debugar	
+				Serial.println ("Despertado por interrupción 1" );
+			#endif	
+			if ( !ServicioInput1() )									//Si la alarma no esta habilitada
+			{
+				Dormir();												//Volvemos a dormir
+			}   															
 	    }	
-	    if ( lInput2 )														//Si el arranque lo ha producido la entrada 2
+	    if ( lInput2 )													//Si el arranque lo ha producido la entrada 2
 	    {
+		  	#ifdef Debug												//Usamos el puerto serie solo para debugar	
+				Serial.println ("Despertado por interrupción 2" );
+				Serial.println ( lOnOff );
+			#endif		    	
 	    	ServicioInput2();
+	    	nInicioDespierto = millis();
 		}
-		if ( !lInput1 && !lInput2 )											//Si ha arranacado por temporización	
+		if ( !lInput1 && !lInput2 )										//Si ha arranacado por temporización	
 		{
+		  	#ifdef Debug												//Usamos el puerto serie solo para debugar	
+				Serial.println ("Despertado por temporizacion" );
+			#endif				
 			ServicioInputTemporizacion();
 	   }
 	}
-	if ( ESP.getResetReason() == "External System" )						//Si el arranque se ha producido por puesta en marcha normal
+	if ( ESP.getResetReason() == "External System" )					//Si el arranque se ha producido por puesta en marcha normal
 	{
-		nTipoEntrada = TipoEntradaNormal;
-	
+		#ifdef Debug													//Usamos el puerto serie solo para debugar	
+			Serial.println ("Arranque normal" );
+		#endif			
+		if (!lInput2)													//Si el arranque es normal por que se ha inicado con interrupcion2
+		{																//cuando el dispositivo estaba encendido.. engañaremos al dispositivo	
+			nTipoEntrada = TipoEntradaNormal;							//para que crea que ha arrancado por interrupcion
+		}else{
+			ServicioInput2(); 
+		}
 	}    			
-
-	InputsDisable();
-
+	//Imprimimos el resultado del arranque
    	#ifdef Debug
    		Serial.println("Estado de entradas");
    		Serial.println("------------------");
@@ -92,22 +133,23 @@ void setup() {
 		Serial.println(nTipoEntrada);
 	#endif		
 
+	//------------------------------
+	//Secuencia de conexion habitual
+	//------------------------------
 	if ( LeeByteEprom ( FlagConfiguracion ) == 0 )						//Comprobamos si el Flag de configuracion esta a 0
 	{																	// y si esta
 		ModoAP();														//Lo ponemos en modo AP
-
 	}else{																//Si no esta
 		if ( ClienteSTA() )												//Lo poenmos en modo STA y nos conectamos a la SSID
 		{																//Si jha conseguido conectarse a ls SSID en modo STA
 	        if ( ClienteServerPic () )									//Intentamos conectar a ServerPic
     		{
-//				CheckFirmware();    									//Comprobamos si el firmware esta actualizado a la ultima version
+				CheckFirmware();    									//Comprobamos si el firmware esta actualizado a la ultima version
 		    	#ifdef Debug
         			Serial.println(" ");
         			Serial.println("Conectado al servidor");
       			#endif 
 
-		 		nTiempoSueno = LeeTiempoSueno();
 				DataConfig aCfg = EpromToConfiguracion ();     							 //Leemos la configuracin de la EEprom
 				char USUARIO[1+aCfg.Usuario.length()]; 
 				(aCfg.Usuario).toCharArray(USUARIO, 1+1+aCfg.Usuario.length());          //Almacenamos en el array USUARIO el nombre de usuario 
@@ -119,10 +161,9 @@ void setup() {
 				char CLIENTEPUSH[1+aCfg.Push.length()]; 							
 				(aCfg.Push).toCharArray(CLIENTEPUSH, 1+1+aCfg.Push.length());            //Almacenamos en el array CLIENTEPUSH el nombre del cliente push 
 				cPush = CLIENTEPUSH;
-
-				if (lPush)																 //Si esta habilitado el Push, notificamos el arranque
+				if (lPush)																 //Si esta habilitado el Push
 				{
-					if (lAlarma)
+					if (lAlarma)														 //y hay alarma, la notificamos al usuario push
 					{
 						cSalida = "sendpush-:-"+cPush+"-:-"+cDispositivo+"-:-Alarma movimiento ";
 						MensajeServidor(cSalida);			
@@ -132,13 +173,14 @@ void setup() {
 
 				if ( lEstadisticas )													//Si están habilitadas las estadisticas, actualizamos el numero de inicios
 				{
-					GrabaVariable ("inicios", 1 + LeeVariable("inicios") );
+					GrabaVariable ("inicios", 1 + LeeVariable("inicios") );				//Incrementamos los inicios
 				}
 
 
 	   			#ifdef  Led																 
-//	      			ApagaLed();   														 //Apagamos el Led para indicar que hay conexion con Serverpic
+	      			ApagaLed();   														 //Apagamos el Led para indicar que hay conexion con Serverpic
 				#endif
+
 
     			cSalida = LeeValor();													//Arrancamos con el ultimo valor
       			if ( cSalida == "ERROR")												//Si no habia ultimo valor, arrancamos con On
@@ -155,15 +197,64 @@ void setup() {
       				}	
 
       			}	
-				if (nTipoEntrada == TipoEntradaTemporizacion)
+
+				delay(100);
+
+    			
+    			RTCTolConexionPerdida();												//Recuperamos de RTC el flag lCOnexionPerdida
+    																					//Para saber si la conexion en el ultimo arranque estaba perdda o no
+    			if ( lConexionPerdida )													//SI lo estaba....	
+    			{																		//Como hemos recuperado la conexion....	
+	    			lConexionPerdida = 0;												//Ponemos el flag lConexionPerdida a 0
+	    			lConexionPerdidaToRTC();                                            //y lo grabamos en RTC
+		    		#ifdef Debug
+						Serial.println("Recuperada la conexion");    			
+					#endif
+    			}
+				if (nTipoEntrada == TipoEntradaTemporizacion ||  nTipoEntrada == TipoEntrada2)			//Si el arranque es por temporización o por interrupcion 2, analizamos la ultima orden
 				{
-					Buzon();
+					Buzon();															//recibida por si se le solicita que despierte
+					delay(1000);
 				}      			
       			cSalida ="";
-
-
+    		}else{																		//Si no se ha conectado a Serverpic....
+    			RTCTolConexionPerdida();												//Recuperamos de RTC el flag lCOnexionPerdida
+    			if ( !lConexionPerdida )												//Si en el anterior arranque no se habia perdido la conexion
+    			{
+	    			lConexionPerdida = 1;												//Ponemos el flag lCOnexionPerdida a 1
+	    			lConexionPerdidaToRTC();	    									//Lo grabamos en RTC
+		    	#ifdef Debug
+					Serial.println("Perdida la conexion con Servidor");    			
+				#endif
+    			}
     		}
-    	}		
+    	}else{																			//Si no se ha conectado a STA
+   			RTCTolConexionPerdida();													//Recuperamos de RTC el flag lCOnexionPerdida
+   			if ( !lConexionPerdida )													//Si en el anterior arranque no se habia perdido la conexion, como que ahora lo ha hecho, avisamos con beep
+   			{
+    			lConexionPerdida = 1;													//Ponemos el flag lCOnexionPerdida a 1
+				lConexionPerdidaToRTC();    											//Lo grabamos en RTC
+		    	#ifdef Debug
+					Serial.println("Perdida la conexion con STA");
+				#endif
+				BeepSirena();															//Hacemos sonar la sirena de forma intermitente para
+				delay(1000);															//Señalizar que no hay wifi
+				BeepSirena();    			
+				delay(1000);
+				BeepSirena();    			
+
+   			}
+    	}
+	    if ( nTipoEntrada == TipoEntrada2 ) 	    	
+    	{	
+				oMensaje.Mensaje = "pong";
+				oMensaje.Destinatario = "websocket";
+				EnviaMensaje(oMensaje);	
+    		 	#ifdef Debug
+					Serial.println("Mandamos pong al websocket");
+				#endif
+		}			
+
 	}
 
 }
@@ -171,16 +262,16 @@ void setup() {
 
 void loop() {
 
-	    long Inicio, Fin, nTempo;
 
 	    if (lSirena && (millis() > nInicioSirena + (nSgSirena*1000)))
 	    {
 			lAlarma = 0;
 			ApagaSirena();
+			nInicioAlarma = millis();											//Tomamos refernecia para temporizar el tiempo que dejamos antes de dormit para que no se vuelva a disparar la alarma 
 	    }
+
 	    if ( nTipoEntrada == TipoEntrada2 || nTipoEntrada == TipoEntradaTemporizacion || nTipoEntrada == TipoEntradaOrden ) 	
 	    {
-
  			/*----------------
  			Comprobacion Reset
  			------------------*/
@@ -195,22 +286,24 @@ void loop() {
 				if ( millis() > ( nMiliSegundosTest + TiempoTest ) )			//Comprobamos si existe conexion  
 				{
 
-
 				  	#ifdef  Led													//Si no esta definido Debug
-//				        EnciendeLed();        									//Encendemos el led para indicar que se comprueba la conexion
+				        EnciendeLed();        									//Encendemos el led para indicar que se comprueba la conexion
 				    #endif    
 					nMiliSegundosTest = millis();
 					if ( !TestConexion(lEstadisticas) )							//Si se ha perdido la conexion
 					{
-						lConexionPerdida = 1;									//Ponemos el flag de perdida conexion a 1
-						if ( GetDispositivo() )									//Si el dispositivo estaba a On
+						if (!lConexionPerdida)
 						{
-							lEstado = 1;										//Guardamos ese estado para tenerlo en cuenta en la reconexion
-							DispositivoOff();									//Ponemos a Off el dispositivo	
-						}	
+							lConexionPerdida = 1;									//Ponemos el flag de perdida conexion a 1
+							if ( GetDispositivo() )									//Si el dispositivo estaba a On
+							{
+								lEstado = 1;										//Guardamos ese estado para tenerlo en cuenta en la reconexion
+								DispositivoOff();									//Ponemos a Off el dispositivo	
+							}
+						}		
 					}else{														//Si existe conexion
 					  	#ifdef  Led												//Si no esta definido Debug
-//				    	    ApagaLed();											//Apagamos el led para indicar que se ha finalizado el test                                                                                      
+				    	    ApagaLed();											//Apagamos el led para indicar que se ha finalizado el test                                                                                      
 					    #endif    
 						if ( lConexionPerdida )									//Comprobamos si es una reconexion ( por perdida anterior )
 						{														//Si lo es
@@ -232,7 +325,6 @@ void loop() {
  		Analisis comandos
  		------------------*/
 		oMensaje = Mensaje ();								 			//Iteractuamos con ServerPic, comprobamos si sigue conectado al servidor y si se ha recibido algun mensaje
-
 		if ( oMensaje.lRxMensaje)										//Si se ha recibido ( oMensaje.lRsMensaje = 1)
 		{
 	    	#ifdef Debug				
@@ -363,7 +455,7 @@ void loop() {
  
 			}
 
-			if ( (oMensaje.Mensaje).indexOf("TSuenoNormal") == 0 )		//Si se recibe una orden de "TA-:-"
+			if ( (oMensaje.Mensaje).indexOf("TSuenoNormal") == 0 )		//Si se recibe una orden de "TSuenoNormal"
 			{															
 	
 				if ( (oMensaje.Mensaje).indexOf("TSuenoNormal-:-") == 0 )
@@ -371,7 +463,7 @@ void loop() {
 					String cValor = String(oMensaje.Mensaje).substring(  3 + String(oMensaje.Mensaje).indexOf("-:-"),  String(oMensaje.Mensaje).length() ); //Extraemos el valor TA deseado
 	        		int nValor = (cValor+'\0').toInt();						//Convertimos el valor String a variable int																			
 		    		#ifdef Debug
-        				Serial.print("TS: ");						
+        				Serial.print("Tiempo Sueño: ");						
 						Serial.println(nValor);
   					#endif
   					GrabaTiempoSueno(nValor);
@@ -387,7 +479,30 @@ void loop() {
 					cSalida = String(' ');					//No ha habido cambio de estado, Vaciamos cSalida para que no se envie a WebSocket y a HomeKit 
 				}
 			}		
-
+			if ( (oMensaje.Mensaje).indexOf("TSirena") == 0 )		//Si se recibe una orden de "TSirena"
+			{															
+	
+				if ( (oMensaje.Mensaje).indexOf("TSirena-:-") == 0 )
+				{
+					String cValor = String(oMensaje.Mensaje).substring(  3 + String(oMensaje.Mensaje).indexOf("-:-"),  String(oMensaje.Mensaje).length() ); //Extraemos el valor TA deseado
+	        		int nValor = (cValor+'\0').toInt();						//Convertimos el valor String a variable int																			
+		    		#ifdef Debug
+        				Serial.print("Tiempo Sirena: ");						
+						Serial.println(nValor);
+  					#endif
+  					GrabaTiempoSirena(nValor);
+  					delay(100);
+		 			nSgSirena = LeeTiempoSueno();
+					cSalida = String(' ');					//No ha habido cambio de estado, no debemos actualizar ni homekit ni websocket
+				}else{
+					nSgSirena = LeeTiempoSirena();
+					cSalida = String(nSgSirena);
+					oMensaje.Mensaje = cSalida;
+					oMensaje.Destinatario = oMensaje.Remitente;
+					EnviaMensaje(oMensaje);	
+					cSalida = String(' ');					//No ha habido cambio de estado, Vaciamos cSalida para que no se envie a WebSocket y a HomeKit 
+				}
+			}		
 			//--------------------------------------------------------------------------------------------
 			//Comandos particulares de Dispositivo
 			//
@@ -426,31 +541,12 @@ void loop() {
  			------------------*/
 			if ( cSalida != String(' ') )				//Si hay cambio de estado
 			{	
-				EnviaValor (cSalida);					//Actualizamos ultimo valor
+Serial.print("Valor ------------------------> " );
+Serial.println(cSalida);
+//				EnviaValor (cSalida);					//Actualizamos ultimo valor
 			}
 
-	 		/*----------------
- 			Actualizacion WebSocket
- 			------------------*/
-			#ifdef WebSocket
-				if ( cSalida != String(' ') && lWebSocket )				//Si está habililtado WebSocket y hay cambio de estado en el dispositivo, se notifica a WebSocket
-				{	
-					EnviaMensajeWebSocket(cSalida);						//Actualizamos las páginas html conectadas
-				}
-	 		#endif
 
-	 		/*----------------
- 			Notificacion HomeKit
- 			------------------*/
-			#ifdef HomeKit
-				if ( cSalida != String(' ') && oMensaje.Remitente != ( cDispositivo + String("_") ) && lHomeKit ) //Si está habililtadoHomeKit y hay cambio de estado en el dispositivo, se notifica a HomeKit
-				{
-					oMensaje.Destinatario = cDispositivo + String("_");
-					oMensaje.Mensaje = cSalida;
-					EnviaMensaje(oMensaje);
-				}
-			#endif		
-			
 			cSalida = String(' ');										//Limpiamos cSalida para iniciar un nuevo bucle
 
 			if ( lEstadisticas )									 	//Si están habilitadas las estadisticas, actualizamos el numero de comandos recibidos
@@ -461,21 +557,31 @@ void loop() {
 			nMiliSegundosTest = millis();								//Refrescamos nMiliSegundosTest para no hacer test de conexión por que si se ha recibido mensaje es que hay conexion	
 	
 		}	
-	    if (  (nTipoEntrada == TipoEntrada1) && !lSirena ) 	    	
+	    if (  (nTipoEntrada == TipoEntrada1) && !lSirena &&  ( millis() > (nInicioAlarma + ( ( nSgAlarma - nSgSirena ) * 1000 ) ) ) )	    	
     	{	
     		
 	   			#ifdef Debug
-					Serial.println("Durmiendo");
+					Serial.println("Durmiendo la interrupcion 1");
 				#endif
 				Dormir();
 		}	
 	    if ( nTipoEntrada == TipoEntradaTemporizacion || nTipoEntrada == TipoEntradaNormal ) 	    	
     	{	
     		 	#ifdef Debug
-					Serial.println("Durmiendo");
+					Serial.println("Durmiendo la temporizacion o el arranque normal");
 				#endif
 				Dormir();
 		}	
+	    if ( nTipoEntrada == TipoEntrada2 ) 	    	
+    	{	
+    		if ( ((millis() - nInicioDespierto )/1000) > TiempoDespiertoNormal)
+    		{
+    		 	#ifdef Debug
+					Serial.println("Durmiendo el arranque por interrupcion 2");
+				#endif
+				Dormir();
+			}	
+		}			
 	    wdt_reset(); 								//Refrescamos WDT
 
 }
